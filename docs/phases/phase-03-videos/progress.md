@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 9/12 completed
+**SIs:** 10/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -75,9 +75,13 @@
   - `onFailed` é handler de evento do worker: se o `markFailed` falhar, só loga (regra de background tasks em nestjs-services.md).
 
 ### SI-03.10 — Runtime do worker: `worker.ts`, `WorkerModule` e serviço `video-worker`
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 6/6 passing (worker.module.spec: 3, app.module.spec: 1, typeorm-options.factory.spec: 1, bull-root.options.spec: 1)
+- **Observations:**
+  - No primeiro `docker compose up video-worker` o TypeORM falhou com 'Entity metadata for Channel#user was not found': o worker só registrava Video/Channel. O `WorkerModule` passou a importar `UsersModule` e o spec ganhou a checagem de metadata (`DataSource.isInitialized`, `hasMetadata('User')`).
+  - O `VideosModule` importado pelo worker traz os controllers de vídeo, mas o application context não tem adaptador HTTP — eles nunca são expostos; o spec garante que o `WorkerModule` não declara controllers nem carrega o `AuthModule`.
+  - Validado: `docker compose logs video-worker` mostra 'Video worker ready (queue: video-processing)'; `docker compose stop video-worker` em 2 s; `npm run build` gera `dist/main.js` e `dist/worker.js`.
+  - `--entryFile`/`--path` do Nest CLI 11 funcionaram como o plano previa (watch do worker compila em `dist-worker/`).
 
 ### SI-03.11 — Entrega pública: detalhes, streaming, download e thumbnail por `public_id`
 - **Status:** pending
