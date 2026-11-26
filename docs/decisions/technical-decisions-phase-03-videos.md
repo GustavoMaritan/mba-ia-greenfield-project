@@ -1,7 +1,7 @@
 ---
 scope_type: phase
 related_phases: [3]
-status: pending
+status: decided
 date: 2026-11-26
 scope_description: "Backend foundation for video upload and processing: message queue, object storage SDK and layout, browser-facing storage endpoint, 10GB resumable upload protocol, processing trigger, video status lifecycle and failure policy, worker runtime, FFmpeg source access, unique public video identifier, and streaming/download delivery."
 ---
@@ -13,7 +13,7 @@ _Subprojects in scope:_
 - `nestjs-project/` — backend that delivers the videos module (upload handshake, draft pre-registration, streaming/download URLs), the video worker (FFmpeg/ffprobe), and the new infrastructure services in `compose.yaml` (object storage, queue broker). Every TD below covers it.
 - `next-frontend/` — Frontend deferred: none of the Phase 03 capability bullets names a screen (upload UI and player arrive with Phase 04 "Painel de gerenciamento" and Phase 05 "Player de vídeo com controles"). No Frontend-scoped TD here. The **Cross-layer** TDs (TD-03, TD-04, TD-10, TD-11) still fix the HTTP/URL contract the future frontend will consume, and they were evaluated against the already-decided **Strict BFF** model (`next-frontend-config-base/TD-03`): bulk video bytes must never traverse the Next.js Route Handlers.
 
-> **Assumptions recorded (headless run, conservative readings):**
+> **Assumptions recorded (conservative readings):**
 > 1. MinIO is the dev object storage, per the architecture diagram ("S3 or MinIO") and the developer's brief. Note: the MinIO community edition stopped publishing official Docker images (Oct 2025) and entered maintenance mode (Dec 2025). This document does not reopen the storage server choice; it recommends an S3-portable SDK (TD-02) so the server can be swapped (pinned MinIO tag, community rebuild, or another S3-compatible server / AWS S3) without code changes. Flag for the developer.
 > 2. "Rascunho" in the bullet "Pré-cadastro automático do vídeo como rascunho" is read as the **publication** state that Phase 04 ("Fluxo de rascunho → publicação") later advances — not as a processing state (see TD-06).
 > 3. Inherited, not reopened: `@nestjs/config` + Joi env validation with namespaced `registerAs` (phase-01 TD-01..TD-03), UUID primary keys (existing entities), custom guards + JWT (phase-02 TD-02), domain error filter `{ statusCode, error, message }` (phase-02 TD-07).
@@ -48,7 +48,8 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (BullMQ + Redis)** — the only option with a first-party NestJS 11 module and job-queue primitives (retries, backoff, `jobId` dedup) that TD-06 relies on out of the box, and it matches the diagram's dedicated queue container. Option B is a genuinely close second if minimizing infrastructure is valued over Nest integration; Option C's broker features are not needed by a single job type.
 
-**Decision:** _[pending]_
+**Decision:** A (BullMQ + Redis via `@nestjs/bullmq`) — Redis image pinned `redis:7.4-alpine`, started with `--maxmemory-policy noeviction`; Compose service name `redis`.
+**Libraries:** @nestjs/bullmq, bullmq
 
 ---
 
@@ -74,7 +75,12 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (AWS SDK v3)** — TD-03's recommended flow needs presigned `UploadPart`, `ListParts` and `CompleteMultipartUpload`, which the AWS SDK supports natively; and given MinIO's maintenance-mode status plus the "plan storage growth and costs" attention point, portability to any S3-compatible backend is the decisive factor.
 
-**Decision:** _[pending]_
+**Decision:** A (AWS SDK v3: `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, `forcePathStyle: true` for MinIO) — env keys: `STORAGE_ENDPOINT`, `STORAGE_PUBLIC_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, `STORAGE_VIDEOS_BUCKET`, `STORAGE_THUMBNAILS_BUCKET`.
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
+**Revisions:**
+
+- 2026-11-26 — Official `minio/minio` images are no longer pullable from Docker Hub/quay (verified locally: "pull access denied"); the Compose storage service uses the community rebuild `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` (same `minio server` CLI). Buckets are created idempotently by the API at startup (no `mc` sidecar). _Rationale:_ upstream image distribution changed; the S3-portable SDK choice (Option A) is unaffected — only the dev server image and bucket bootstrap are fixed here.
 
 ---
 
@@ -105,7 +111,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (presigned multipart direct to storage)** — it is the only option that keeps 10GB off both the Next.js BFF and the Nest API, gives resumability through S3's own `ListParts`, and turns the `initiate` call into the natural trigger for draft pre-registration.
 
-**Decision:** _[pending]_
+**Decision:** A (presigned S3 multipart, browser → storage) — max size 10 GiB (10737418240 bytes) validated at initiation; fixed part size 64 MiB (max 160 parts, well under the 10,000 S3 limit; S3 min part 5 MiB); part URLs signed on demand per batch of part numbers, TTL 1h; resume via `ListParts`; the initiate call creates the draft video row.
 
 ---
 
@@ -136,7 +142,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (dual endpoint)** — it keeps the internal Compose service-name rule intact, needs only one extra env key, and is the same topology used in production (internal endpoint vs public storage/CDN domain).
 
-**Decision:** _[pending]_
+**Decision:** A (dual endpoint) — dev values: `STORAGE_ENDPOINT=http://minio:9000` (internal, Compose service name), `STORAGE_PUBLIC_ENDPOINT=http://localhost:9100` (host-published MinIO port, used only to sign browser-facing URLs).
 
 ---
 
@@ -162,7 +168,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option B (bucket per asset type)** — thumbnails and originals have genuinely different access and cost profiles (small, cacheable, likely public in listings vs 10GB, private, presigned), and per-bucket policies/metrics make the growth-and-cost attention point measurable from day one; keys inside each bucket still group by `videoId`.
 
-**Decision:** _[pending]_
+**Decision:** B (bucket per asset type) — buckets `videos` and `thumbnails`; keys `{videoId}/original` (videos bucket) and `{videoId}/thumbnail.jpg` (thumbnails bucket). Both buckets private.
 
 ---
 
@@ -193,7 +199,8 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (orthogonal statuses)** — it reads "rascunho" as the publication state that Phase 04 owns, so Phase 03 never has to be rewritten, and it delegates retry bookkeeping to the queue (TD-01) instead of duplicating it in the schema.
 
-**Decision:** _[pending]_
+**Decision:** B (single combined status enum), parameterized to the phase brief — one `status` column with values `draft → processing → ready | failed` ("rascunho → processando → pronto/erro"); `draft` = pre-registered while the upload is in progress. Publication/visibility (Phase 04 "Fluxo de rascunho → publicação", public/unlisted) will be added by Phase 04 as its own column; Phase 03 does not model it. Failure policy: BullMQ `attempts: 3` with exponential backoff (base 5s); the processor is idempotent (deterministic keys, overwrite); after the final attempt the worker sets `status=failed` and stores a short `failure_reason`. Abandoned multipart uploads: cleanup deferred (out of scope, follow-up).
+**Note:** Decision deliberately diverges from the Recommendation (A) — the developer kept a single status column matching the phase brief; Phase 04 adds publication as a separate column, so the orthogonality concern is addressed then without rewriting this enum.
 
 ---
 
@@ -224,7 +231,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (API `complete` endpoint)** — the API must call `CompleteMultipartUpload` anyway in TD-03's flow, so enqueuing there is the single, portable, authorized trigger; `jobId = videoId` makes duplicate calls harmless. Option C can be added later as a safety net.
 
-**Decision:** _[pending]_
+**Decision:** A (API `complete` endpoint enqueues; `jobId = videoId`) — transition `draft → processing` happens in the same request after `CompleteMultipartUpload` succeeds; enqueue after the DB update.
 
 ---
 
@@ -255,7 +262,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (separate container, same codebase)** — it matches the diagram's dedicated worker, keeps FFmpeg off the API's CPU budget, and reuses the existing entities/config without introducing monorepo package tooling.
 
-**Decision:** _[pending]_
+**Decision:** A (separate `video-worker` Compose service, same NestJS codebase) — standalone application context entrypoint `src/worker.ts`; image with `ffmpeg`/`ffprobe` installed.
 
 ---
 
@@ -281,7 +288,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (presigned URL input)** — Phase 03 only needs metadata and one frame, which FFmpeg resolves with a handful of range requests; copying 10GB per job would make worker disk the bottleneck. Option B becomes relevant only if full transcoding (e.g. HLS, TD-11 C) is adopted later.
 
-**Decision:** _[pending]_
+**Decision:** A (presigned GET URL input) — `ffprobe`/`ffmpeg` read the original via a presigned GET signed with the INTERNAL endpoint, TTL 1h; thumbnail = single JPEG frame at `min(1s, duration/2)`, uploaded to the thumbnails bucket.
 
 ---
 
@@ -312,7 +319,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option B (random short public ID)** — the only option that is both short (attention point) and unguessable, which Phase 04's unlisted visibility depends on; UUID stays as the internal PK so existing conventions are untouched.
 
-**Decision:** _[pending]_
+**Decision:** B (random short public ID in a unique column `public_id`) — generated with `node:crypto` (11 chars, base62); no `nanoid` dependency (avoids the ESM-only v5 issue); retry on unique violation.
 
 ---
 
@@ -343,7 +350,7 @@ _Subprojects in scope:_
 
 **Recommendation:** **Option A (presigned GET from storage)** — it satisfies streaming via native Range requests and download via one presign parameter, with zero load on API/BFF and no transcoding cost; HLS (Option C) can be layered later as a worker job without changing the public contract.
 
-**Decision:** _[pending]_
+**Decision:** A (presigned GET from storage) — the API exposes stable routes that answer `302 Found` to a presigned URL signed with the PUBLIC endpoint (TTL 1h): stream (inline), download (`ResponseContentDisposition: attachment` with the original filename), thumbnail. Storage serves Range/206 natively.
 
 ---
 
@@ -351,14 +358,14 @@ _Subprojects in scope:_
 
 | ID | Scope | Decision | Recommendation | Choice |
 |----|-------|----------|---------------|--------|
-| TD-01 | Backend | Message Queue Technology | A (BullMQ + Redis) | _[pending]_ |
-| TD-02 | Backend | Object Storage SDK and Storage Env Contract | A (AWS SDK v3) | _[pending]_ |
-| TD-03 | Cross-layer | 10GB Upload Protocol and Resumability | A (Presigned multipart direct to storage) | _[pending]_ |
-| TD-04 | Cross-layer | Browser-Facing Storage Endpoint for Presigned URLs | A (Dual endpoint) | _[pending]_ |
-| TD-05 | Backend | Bucket and Object Key Layout | B (Bucket per asset type) | _[pending]_ |
-| TD-06 | Backend | Video Status Lifecycle and Failure Policy | A (Orthogonal processing/publication statuses) | _[pending]_ |
-| TD-07 | Backend | Processing Trigger After Upload Completion | A (API `complete` endpoint enqueues) | _[pending]_ |
-| TD-08 | Backend | Video Worker Runtime | A (Separate container, same codebase) | _[pending]_ |
-| TD-09 | Backend | FFmpeg Source Access for Metadata and Thumbnail | A (Presigned URL input) | _[pending]_ |
-| TD-10 | Cross-layer | Unique Public Video Identifier | B (Random short public ID) | _[pending]_ |
-| TD-11 | Cross-layer | Streaming and Download Delivery | A (Presigned GET from storage) | _[pending]_ |
+| TD-01 | Backend | Message Queue Technology | A (BullMQ + Redis) | A (BullMQ + Redis) |
+| TD-02 | Backend | Object Storage SDK and Storage Env Contract | A (AWS SDK v3) | A (AWS SDK v3) |
+| TD-03 | Cross-layer | 10GB Upload Protocol and Resumability | A (Presigned multipart direct to storage) | A (Presigned multipart direct to storage) |
+| TD-04 | Cross-layer | Browser-Facing Storage Endpoint for Presigned URLs | A (Dual endpoint) | A (Dual endpoint) |
+| TD-05 | Backend | Bucket and Object Key Layout | B (Bucket per asset type) | B (Bucket per asset type) |
+| TD-06 | Backend | Video Status Lifecycle and Failure Policy | A (Orthogonal processing/publication statuses) | B (Single combined status enum) |
+| TD-07 | Backend | Processing Trigger After Upload Completion | A (API `complete` endpoint enqueues) | A (API `complete` endpoint enqueues) |
+| TD-08 | Backend | Video Worker Runtime | A (Separate container, same codebase) | A (Separate container, same codebase) |
+| TD-09 | Backend | FFmpeg Source Access for Metadata and Thumbnail | A (Presigned URL input) | A (Presigned URL input) |
+| TD-10 | Cross-layer | Unique Public Video Identifier | B (Random short public ID) | B (Random short public ID) |
+| TD-11 | Cross-layer | Streaming and Download Delivery | A (Presigned GET from storage) | A (Presigned GET from storage) |

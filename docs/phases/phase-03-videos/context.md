@@ -3,7 +3,9 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-11-26T02:47:24-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-11-26T02:59:04-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-11-26T03:12:50-03:00"
+  docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-11-26T02:47:35-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-11-26T03:15:22-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-11-26T02:47:35-03:00"
   docs/phases/phase-01-configuracao-base/phase-01-configuracao-base.md: "2026-11-26T02:47:35-03:00"
   docs/phases/phase-02-auth/context.md: "2026-11-26T02:47:35-03:00"
@@ -15,11 +17,11 @@ sources_mtime:
 
 # phase-03-videos — Context
 
-> **Assumptions recorded (headless run, no user prompts):**
+> **Assumptions recorded (non-interactive run):**
 > 1. Target directory follows the `phase-02-auth` precedent: `docs/phases/phase-03-videos/` (slug `phase-03-videos`, not `phase-03-phase-03-videos`).
 > 2. The slice's decisions doc has no `covers_capabilities` frontmatter → monolithic fallback: `scope_prose` = all Fase 03 bullets from `docs/project-plan.md`.
 > 3. UI heuristic fired on a false positive (the substring `ui` inside "arq**ui**vos"); no bullet names a screen. Option (b) "Proceed without inventory (UI↔API sync deferred)" was applied, as instructed.
-> 4. Correlated decisions (Step 4): no candidate scored `high`, so the default selection is empty. `openapi-docs-nestjs` (medium — new upload/streaming/download endpoints should follow the OpenAPI tooling) was **not** included; add it by rerunning interactively if desired.
+> 4. Correlated decisions (Step 4): no candidate scored `high`, so the default selection is empty. `openapi-docs-nestjs` (medium — new upload/streaming/download endpoints should follow the OpenAPI tooling) was **not** included at first; it was added afterwards by `/plan-resolve` (DG-1, developer choice 2026-11-26) — see `## Inherited Decisions Detail` and the OpenAPI convention under `## Inherited Conventions`.
 > 5. The agent types `decisions-reader`, `decisions-correlator`, and `phases-reader` were not registered in this session; their `.claude/agents/*.md` specs were executed by general-purpose subagents. Filter Trace verification passed (T=8 for both readers, identical sets, kept set `{technical-decisions-phase-03-videos.md}` in both; decided-TD count expected=0, actual=0).
 
 ## Scope
@@ -46,6 +48,13 @@ sources_mtime:
 
 **Deferred subprojects:** _None._ (The phase decisions doc defers `next-frontend/`: upload UI and player arrive with Fases 04/05.)
 
+**Clarifications** (developer answers recorded by `/plan-resolve`, 2026-11-26):
+
+- **Metadata to persist (AMB-1):** `duration_seconds` (numeric) plus a `metadata` jsonb with `width`, `height`, `videoCodec`, `audioCodec` (nullable), `formatName`, `bitRate`, `frameRate`, `sizeBytes`, as reported by ffprobe.
+- **Access by status (AMB-2):** anonymous/public routes keyed by `public_id` (details, stream, download, thumbnail) only serve videos with `status=ready`; any other status answers `404 VIDEO_NOT_FOUND`. The owner (authenticated, via their channel) can read their own video in any status through an authenticated owner route. Phase 04 adds visibility rules on top.
+- **Verifiable criteria for "10GB sem impacto na performance" (AMB-3):** (a) no API endpoint accepts video bytes — the upload body goes only to presigned storage URLs; (b) initiation rejects sizes > 10 GiB with 400; (c) a manual run uploads a file ≥1 GB in parts directly to MinIO while the API stays responsive; (d) the e2e suite exercises a real multipart upload against MinIO with a small generated video.
+- **OpenAPI (DG-1):** new endpoints follow the repo-wide `openapi-docs-nestjs` decision (see `## Inherited Decisions Detail` / `## Inherited Conventions`).
+
 **Sequencing notes:** "> Depende de: Fase 01, Fase 02". Phase intro: "Upload de arquivos grandes sem travar o sistema, processamento automático do vídeo e geração de URL única."
 
 **Neighbors (for boundary detection only):**
@@ -57,17 +66,18 @@ sources_mtime:
 
 | Ref | Source | Scope | Topic | Status | Decision | Libraries |
 |-----|--------|-------|-------|--------|----------|-----------|
-| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | pending | — | — |
-| phase-03-videos/TD-02 | phase | Backend | Object Storage SDK and Storage Env Contract | pending | — | — |
-| phase-03-videos/TD-03 | phase | Cross-layer | 10GB Upload Protocol and Resumability | pending | — | — |
-| phase-03-videos/TD-04 | phase | Cross-layer | Browser-Facing Storage Endpoint for Presigned URLs | pending | — | — |
-| phase-03-videos/TD-05 | phase | Backend | Bucket and Object Key Layout | pending | — | — |
-| phase-03-videos/TD-06 | phase | Backend | Video Status Lifecycle and Failure Policy | pending | — | — |
-| phase-03-videos/TD-07 | phase | Backend | Processing Trigger After Upload Completion | pending | — | — |
-| phase-03-videos/TD-08 | phase | Backend | Video Worker Runtime | pending | — | — |
-| phase-03-videos/TD-09 | phase | Backend | FFmpeg Source Access for Metadata and Thumbnail Extraction | pending | — | — |
-| phase-03-videos/TD-10 | phase | Cross-layer | Unique Public Video Identifier | pending | — | — |
-| phase-03-videos/TD-11 | phase | Cross-layer | Streaming and Download Delivery | pending | — | — |
+| phase-03-videos/TD-01 | phase | Backend | Message Queue Technology | decided | A (BullMQ + Redis) | @nestjs/bullmq, bullmq |
+| phase-03-videos/TD-02 | phase | Backend | Object Storage SDK and Storage Env Contract | decided | A (AWS SDK v3) | @aws-sdk/client-s3, @aws-sdk/s3-request-presigner |
+| └─ Last revision: 2026-11-26 — dev storage image `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`; buckets created by the API at startup | | | | | | |
+| phase-03-videos/TD-03 | phase | Cross-layer | 10GB Upload Protocol and Resumability | decided | A (Presigned multipart direct to storage) | — |
+| phase-03-videos/TD-04 | phase | Cross-layer | Browser-Facing Storage Endpoint for Presigned URLs | decided | A (Dual endpoint) | — |
+| phase-03-videos/TD-05 | phase | Backend | Bucket and Object Key Layout | decided | B (Bucket per asset type) | — |
+| phase-03-videos/TD-06 | phase | Backend | Video Status Lifecycle and Failure Policy | decided | B (Single combined status enum) | — |
+| phase-03-videos/TD-07 | phase | Backend | Processing Trigger After Upload Completion | decided | A (API `complete` endpoint enqueues) | — |
+| phase-03-videos/TD-08 | phase | Backend | Video Worker Runtime | decided | A (Separate container, same codebase) | — |
+| phase-03-videos/TD-09 | phase | Backend | FFmpeg Source Access for Metadata and Thumbnail Extraction | decided | A (Presigned URL input) | — |
+| phase-03-videos/TD-10 | phase | Cross-layer | Unique Public Video Identifier | decided | B (Random short public ID) | — |
+| phase-03-videos/TD-11 | phase | Cross-layer | Streaming and Download Delivery | decided | A (Presigned GET from storage) | — |
 
 _Source files:_
 
@@ -89,7 +99,64 @@ _Source files:_
 
 ## Decisions Detail
 
-_No decided TDs yet._
+### phase-03-videos/TD-01
+
+**Recommendation:** the only option with a first-party NestJS 11 module and job-queue primitives (retries, backoff, `jobId` dedup) that TD-06 relies on out of the box, and it matches the diagram's dedicated queue container. Option B is a genuinely close second if minimizing infrastructure is valued over Nest integration; Option C's broker features are not needed by a single job type.
+**Libraries:** @nestjs/bullmq, bullmq
+
+### phase-03-videos/TD-02
+
+**Recommendation:** TD-03's recommended flow needs presigned `UploadPart`, `ListParts` and `CompleteMultipartUpload`, which the AWS SDK supports natively; and given MinIO's maintenance-mode status plus the "plan storage growth and costs" attention point, portability to any S3-compatible backend is the decisive factor.
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
+**Revisions:**
+- 2026-11-26 — Official `minio/minio` images are no longer pullable from Docker Hub/quay (verified locally: "pull access denied"); the Compose storage service uses the community rebuild `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` (same `minio server` CLI). Buckets are created idempotently by the API at startup (no `mc` sidecar). _Rationale:_ upstream image distribution changed; the S3-portable SDK choice (Option A) is unaffected — only the dev server image and bucket bootstrap are fixed here.
+
+### phase-03-videos/TD-03
+
+**Recommendation:** it is the only option that keeps 10GB off both the Next.js BFF and the Nest API, gives resumability through S3's own `ListParts`, and turns the `initiate` call into the natural trigger for draft pre-registration.
+**Libraries:** —
+
+### phase-03-videos/TD-04
+
+**Recommendation:** it keeps the internal Compose service-name rule intact, needs only one extra env key, and is the same topology used in production (internal endpoint vs public storage/CDN domain).
+**Libraries:** —
+
+### phase-03-videos/TD-05
+
+**Recommendation:** thumbnails and originals have genuinely different access and cost profiles (small, cacheable, likely public in listings vs 10GB, private, presigned), and per-bucket policies/metrics make the growth-and-cost attention point measurable from day one; keys inside each bucket still group by `videoId`.
+**Libraries:** —
+
+### phase-03-videos/TD-06
+
+**Recommendation:** it reads "rascunho" as the publication state that Phase 04 owns, so Phase 03 never has to be rewritten, and it delegates retry bookkeeping to the queue (TD-01) instead of duplicating it in the schema.
+**Note:** Decision deliberately diverges from the Recommendation (A) — the developer kept a single status column matching the phase brief; Phase 04 adds publication as a separate column, so the orthogonality concern is addressed then without rewriting this enum.
+**Libraries:** —
+
+### phase-03-videos/TD-07
+
+**Recommendation:** the API must call `CompleteMultipartUpload` anyway in TD-03's flow, so enqueuing there is the single, portable, authorized trigger; `jobId = videoId` makes duplicate calls harmless. Option C can be added later as a safety net.
+**Libraries:** —
+
+### phase-03-videos/TD-08
+
+**Recommendation:** it matches the diagram's dedicated worker, keeps FFmpeg off the API's CPU budget, and reuses the existing entities/config without introducing monorepo package tooling.
+**Libraries:** —
+
+### phase-03-videos/TD-09
+
+**Recommendation:** Phase 03 only needs metadata and one frame, which FFmpeg resolves with a handful of range requests; copying 10GB per job would make worker disk the bottleneck. Option B becomes relevant only if full transcoding (e.g. HLS, TD-11 C) is adopted later.
+**Libraries:** —
+
+### phase-03-videos/TD-10
+
+**Recommendation:** the only option that is both short (attention point) and unguessable, which Phase 04's unlisted visibility depends on; UUID stays as the internal PK so existing conventions are untouched.
+**Libraries:** —
+
+### phase-03-videos/TD-11
+
+**Recommendation:** it satisfies streaming via native Range requests and download via one presign parameter, with zero load on API/BFF and no transcoding cost; HLS (Option C) can be layered later as a worker job without changing the public contract.
+**Libraries:** —
 
 ## Inherited Decisions Detail
 
@@ -200,6 +267,24 @@ _No decided TDs yet._
 **Recommendation:** Three reasons. (1) **First-paint-correct** — the user sees the right outcome on the first paint, no skeleton, no flicker. (2) **Single integration pattern across both flows** — confirmation is RSC-only; reset is RSC + Client form (TD-04, TD-05 patterns reused) — both share the "RSC owns the token, Client Component owns the input" split. (3) **Email-prefetch behavior** is solved at the backend's idempotent-confirmation level (a small note for `/plan-build` to confirm; not a separate TD). Option B's Route-Handler-as-link-target adds redirects for no clean gain. Option C is dominated.
 **Libraries:** —
 
+### openapi-docs-nestjs/TD-01
+
+**Recommendation:** **Option A (`@nestjs/swagger`)** — é a única opção que preserva as decisões anteriores (`class-validator` em TD-06 de phase-02-auth) sem re-platform; o CLI plugin com `classValidatorShim: true` aproveita os decoradores `class-validator` existentes para inferir schemas, mantendo o boilerplate baixo. Nestia tem mérito técnico real mas o custo de migração do stack de validação inviabiliza-a sem uma decisão upstream de supersede de TD-06. Manual authoring é descartado.
+**Libraries:** @nestjs/swagger
+
+**Revisions:**
+- 2026-05-12 — Esclarece que o CLI plugin (`classValidatorShim: true`) cobre apenas inferência de schemas de DTOs a partir de `class-validator`; documentação de operações, respostas tipadas por status code, contratos de erro (alinhados ao envelope de phase-02-auth/TD-07) e exemplos exigem decoradores explícitos (`@ApiOperation`, `@ApiResponse`, `@ApiBody`, `@ApiParam`, `@ApiQuery`, `@ApiExtraModels`).
+
+### openapi-docs-nestjs/TD-02
+
+**Recommendation:** **Option C (Ambos)** — o custo marginal sobre Option A é apenas um npm script (~15 linhas) e o benefício é uma fundação correta para futura integração FE (codegen offline) sem perder a UI interativa que dev/QA usam. Option B sozinho pune a experiência de desenvolvimento em dev/local; Option A sozinho compromete o pipeline de codegen futuro. Combinar é dominante.
+**Libraries:** —
+
+### openapi-docs-nestjs/TD-03
+
+**Recommendation:** **Option B (Apenas em dev/staging)** — alinha com a postura defensiva já estabelecida em phase 02 e não compromete consumidores legítimos (o `openapi.json` commitado em TD-02 cumpre o papel de "spec consultável fora da UI"). Re-abrir como Option A ou C é trivial no futuro se um caso de uso de API pública aparecer.
+**Libraries:** —
+
 ## Inherited Conventions
 
 - Backend config uses `@nestjs/config` with namespaced `registerAs(name, () => ({...}))` factories — one file per domain in `src/config/`. _(from phase 01)_
@@ -208,6 +293,7 @@ _No decided TDs yet._
 - `data-source.ts` loads `.env` via `import 'dotenv/config'` at the top, then imports `databaseConfig` and calls it as a plain function. _(from phase 01)_
 - Database connection parameters (host, port, etc.) are sourced from a single `databaseConfig` factory — never duplicated between `AppModule` and `data-source.ts`. _(from phase 01)_
 - `TypeOrmModule.forRootAsync` is used (not `forRoot`), with `imports: [ConfigModule]`, `inject: [databaseConfig.KEY]`, `useFactory` returning the options. _(from phase 01)_
+- Every new controller/DTO carries the OpenAPI decorators (`@ApiTags`, `@ApiOperation`, `@ApiResponse` per status incl. the error envelope, `@ApiParam`/`@ApiQuery`/`@ApiBody` as applicable) and `openapi.json` is re-exported after endpoint changes. _(from openapi-docs-nestjs, inherited via DG-1)_
 
 ## Inherited Deferred Capabilities
 
