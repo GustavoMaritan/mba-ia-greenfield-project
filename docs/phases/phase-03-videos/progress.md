@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 4/12 completed
+**SIs:** 5/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -37,9 +37,11 @@
   - Se o insert falhar após o `CreateMultipartUpload`, o multipart fica órfão no storage; limpeza de uploads abandonados ficou como follow-up (TD-06).
 
 ### SI-03.5 — Endpoints do dono: iniciar upload e consultar vídeo
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 10/10 e2e passing (test/videos.e2e-spec.ts)
+- **Observations:**
+  - Criado também `test/helpers/create-e2e-app.ts` (reproduz pipes/filtros do main.ts) para os e2e de vídeos; o helper de usuário cria usuário+canal via `UsersService` e assina o token com o mesmo payload do login.
+  - A conferência do `openapi.json` exportado ficou para a SI-03.12, junto da reexportação.
 
 ### SI-03.6 — Upload multipart: assinar partes e listar partes enviadas (retomada)
 - **Status:** pending
