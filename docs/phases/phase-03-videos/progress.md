@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 6/12 completed
+**SIs:** 7/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -51,9 +51,12 @@
   - Guarda de status também exige `upload_id` presente; vídeo sem upload aberto responde `VIDEO_NOT_UPLOADABLE`.
 
 ### SI-03.7 — Conclusão do upload e enfileiramento do processamento
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** unit+integration de vídeos 46/46 (videos.service.spec +7, video-processing.producer.integration-spec 2 com Redis real, videos.service.integration-spec +1, videos.module.spec 1); e2e videos 25/25 (+6)
+- **Observations:**
+  - `BullModule.forRootAsync` entrou inline no `AppModule`; a extração para fábrica reutilizável fica na SI-03.10, como o plano prevê.
+  - O caminho concorrente cobre `NoSuchUpload` tanto no `ListParts` quanto no `CompleteMultipartUpload` (os dois ficam no mesmo try).
+  - Helper `createVideosTestingModule` passou a registrar o `BullModule.forRootAsync`.
 
 ### SI-03.8 — FfmpegService: extração de metadados (ffprobe) e thumbnail (ffmpeg)
 - **Status:** pending
