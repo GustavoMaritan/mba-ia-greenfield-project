@@ -1,4 +1,11 @@
+import { getQueueToken } from '@nestjs/bullmq';
 import { TestingModule } from '@nestjs/testing';
+import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { Queue } from 'bullmq';
+import {
+  S3_INTERNAL_CLIENT,
+  StorageBucket,
+} from '../storage/storage.constants';
 import { DataSource } from 'typeorm';
 import { StorageService } from '../storage/storage.service';
 import { cleanAllTables } from '../test/create-test-data-source';
@@ -7,6 +14,7 @@ import {
   createVideosTestingModule,
 } from '../test/videos-test-module';
 import { Video, VideoStatus } from './entities/video.entity';
+import { VIDEO_PROCESSING_QUEUE } from './videos.constants';
 import { VideosModule } from './videos.module';
 import { VideosService } from './videos.service';
 import { VideoNotFoundException } from './videos.exceptions';
@@ -17,12 +25,16 @@ describe('VideosService (integration)', () => {
   let dataSource: DataSource;
   let service: VideosService;
   let storage: StorageService;
+  let queue: Queue;
+  let s3: S3Client;
 
   beforeAll(async () => {
     module = await createVideosTestingModule([VideosModule]);
     dataSource = module.get(DataSource);
     service = module.get(VideosService);
     storage = module.get(StorageService);
+    queue = module.get(getQueueToken(VIDEO_PROCESSING_QUEUE));
+    s3 = module.get(S3_INTERNAL_CLIENT);
   });
 
   afterAll(async () => {
@@ -111,6 +123,36 @@ describe('VideosService (integration)', () => {
           size_bytes: input.size_bytes,
         },
       ]);
+    });
+  });
+
+  describe('completeUpload', () => {
+    it('should complete the object, move to processing and enqueue the job', async () => {
+      const { user } = await createUserWithChannel(dataSource);
+      const { video } = await service.initiateUpload(user.id, input);
+      const { parts } = await service.signUploadParts(user.id, video.id, [1]);
+      await fetch(parts[0].url, {
+        method: 'PUT',
+        body: Buffer.alloc(input.size_bytes, 3),
+      });
+
+      const completed = await service.completeUpload(user.id, video.id);
+
+      expect(completed.status).toBe(VideoStatus.Processing);
+      const row = await dataSource
+        .getRepository(Video)
+        .findOneByOrFail({ id: video.id });
+      expect(row.status).toBe(VideoStatus.Processing);
+      expect(row.upload_id).toBeNull();
+      const head = await s3.send(
+        new HeadObjectCommand({
+          Bucket: storage.bucketName(StorageBucket.Videos),
+          Key: row.video_key,
+        }),
+      );
+      expect(head.ContentLength).toBe(input.size_bytes);
+      const job = await queue.getJob(video.id);
+      expect(job?.data).toEqual({ videoId: video.id });
     });
   });
 });

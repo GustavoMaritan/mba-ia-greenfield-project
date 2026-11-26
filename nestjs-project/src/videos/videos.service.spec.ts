@@ -3,11 +3,14 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { QueryFailedError } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { StorageService } from '../storage/storage.service';
+import { S3ServiceException } from '@aws-sdk/client-s3';
 import { Video, VideoStatus } from './entities/video.entity';
+import { VideoProcessingProducer } from './video-processing.producer';
 import { VideosService, defaultTitle, partCountFor } from './videos.service';
 import {
   InvalidPartNumberException,
   VideoNotFoundException,
+  UploadIncompleteException,
   VideoNotUploadableException,
 } from './videos.exceptions';
 
@@ -48,8 +51,10 @@ describe('VideosService', () => {
     create: jest.fn((data: Partial<Video>) => Object.assign(new Video(), data)),
     save: jest.fn(),
     findOne: jest.fn(),
+    update: jest.fn(),
   };
   const channelsService = { findByUserId: jest.fn() };
+  const producer = { enqueue: jest.fn() };
   const storageService = {
     createMultipartUpload: jest.fn(),
     presignUploadPart: jest.fn(),
@@ -73,6 +78,7 @@ describe('VideosService', () => {
         { provide: getRepositoryToken(Video), useValue: videoRepository },
         { provide: ChannelsService, useValue: channelsService },
         { provide: StorageService, useValue: storageService },
+        { provide: VideoProcessingProducer, useValue: producer },
       ],
     }).compile();
 
@@ -270,6 +276,105 @@ describe('VideosService', () => {
       await expect(
         service.listUploadedParts(USER_ID, 'video-1'),
       ).rejects.toBeInstanceOf(VideoNotUploadableException);
+    });
+  });
+
+  describe('completeUpload', () => {
+    const MiB64 = 64 * 1024 ** 2;
+    const twoParts = [
+      { partNumber: 1, etag: '"a"', size: MiB64 },
+      { partNumber: 2, etag: '"b"', size: 10 },
+    ];
+
+    it('should complete the multipart, move to processing and enqueue', async () => {
+      videoRepository.findOne.mockResolvedValue(
+        makeVideo({ size_bytes: MiB64 + 10 }),
+      );
+      storageService.listParts.mockResolvedValue(twoParts);
+
+      const video = await service.completeUpload(USER_ID, 'video-1');
+
+      expect(storageService.completeMultipartUpload).toHaveBeenCalledWith(
+        'video-1/original',
+        'upload-1',
+        twoParts,
+      );
+      expect(videoRepository.update).toHaveBeenCalledWith(
+        { id: 'video-1', status: VideoStatus.Draft },
+        { status: VideoStatus.Processing, upload_id: null },
+      );
+      expect(producer.enqueue).toHaveBeenCalledWith('video-1');
+      expect(video.status).toBe(VideoStatus.Processing);
+    });
+
+    it('should fail with UPLOAD_INCOMPLETE when a part is missing', async () => {
+      videoRepository.findOne.mockResolvedValue(
+        makeVideo({ size_bytes: MiB64 + 10 }),
+      );
+      storageService.listParts.mockResolvedValue([twoParts[0]]);
+
+      await expect(
+        service.completeUpload(USER_ID, 'video-1'),
+      ).rejects.toBeInstanceOf(UploadIncompleteException);
+      expect(storageService.completeMultipartUpload).not.toHaveBeenCalled();
+      expect(producer.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('should fail with UPLOAD_INCOMPLETE when the summed size differs', async () => {
+      videoRepository.findOne.mockResolvedValue(
+        makeVideo({ size_bytes: MiB64 + 11 }),
+      );
+      storageService.listParts.mockResolvedValue(twoParts);
+
+      await expect(
+        service.completeUpload(USER_ID, 'video-1'),
+      ).rejects.toBeInstanceOf(UploadIncompleteException);
+    });
+
+    it('should only re-enqueue when the video is already processing', async () => {
+      videoRepository.findOne.mockResolvedValue(
+        makeVideo({ status: VideoStatus.Processing, upload_id: null }),
+      );
+
+      await service.completeUpload(USER_ID, 'video-1');
+
+      expect(producer.enqueue).toHaveBeenCalledWith('video-1');
+      expect(storageService.listParts).not.toHaveBeenCalled();
+      expect(videoRepository.update).not.toHaveBeenCalled();
+    });
+
+    it.each([VideoStatus.Ready, VideoStatus.Failed])(
+      'should reject a %s video',
+      async (status) => {
+        videoRepository.findOne.mockResolvedValue(
+          makeVideo({ status, upload_id: null }),
+        );
+
+        await expect(
+          service.completeUpload(USER_ID, 'video-1'),
+        ).rejects.toBeInstanceOf(VideoNotUploadableException);
+      },
+    );
+
+    it('should follow the idempotent path when a concurrent call already completed it', async () => {
+      videoRepository.findOne
+        .mockResolvedValueOnce(makeVideo({ size_bytes: MiB64 + 10 }))
+        .mockResolvedValueOnce(
+          makeVideo({ status: VideoStatus.Processing, upload_id: null }),
+        );
+      storageService.listParts.mockRejectedValue(
+        new S3ServiceException({
+          name: 'NoSuchUpload',
+          $fault: 'client',
+          $metadata: {},
+        }),
+      );
+
+      const video = await service.completeUpload(USER_ID, 'video-1');
+
+      expect(video.status).toBe(VideoStatus.Processing);
+      expect(producer.enqueue).toHaveBeenCalledWith('video-1');
+      expect(videoRepository.update).not.toHaveBeenCalled();
     });
   });
 });

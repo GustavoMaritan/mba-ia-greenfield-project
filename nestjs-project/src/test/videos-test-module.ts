@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
+import { ConfigModule, type ConfigType } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import type { DynamicModule, ForwardReference, Type } from '@nestjs/common';
@@ -40,6 +41,12 @@ export async function createVideosTestingModule(
         load: [storageConfig, queueConfig],
       }),
       TypeOrmModule.forRoot(createTestDataSource(ALL_ENTITIES).options),
+      BullModule.forRootAsync({
+        inject: [queueConfig.KEY],
+        useFactory: (cfg: ConfigType<typeof queueConfig>) => ({
+          connection: { host: cfg.host, port: cfg.port },
+        }),
+      }),
       ...imports,
     ],
   }).compile();

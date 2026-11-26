@@ -25,6 +25,7 @@ import { InitiateVideoUploadDto } from './dto/initiate-video-upload.dto';
 import { InitiateVideoUploadResponseDto } from './dto/initiate-video-upload-response.dto';
 import { SignUploadPartsDto } from './dto/sign-upload-parts.dto';
 import { SignedUploadPartsResponseDto } from './dto/signed-upload-parts-response.dto';
+import { UploadCompletionResponseDto } from './dto/upload-completion-response.dto';
 import { UploadedPartsResponseDto } from './dto/uploaded-parts-response.dto';
 import {
   VideoOwnerResponseDto,
@@ -182,5 +183,47 @@ export class ChannelVideosController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<UploadedPartsResponseDto> {
     return { parts: await this.videosService.listUploadedParts(user.sub, id) };
+  }
+
+  @Post(':id/upload-completion')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Complete the upload',
+    description:
+      'Completes the multipart upload in storage, moves the video to processing and enqueues the processing job (metadata + thumbnail). Repeating the call while processing is harmless.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiResponse({
+    status: 202,
+    description: 'Upload completed; processing enqueued',
+    type: UploadCompletionResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'id is not a valid UUID',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Missing or invalid access token',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found in the caller channel',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'UPLOAD_INCOMPLETE (missing parts or size mismatch) or VIDEO_NOT_UPLOADABLE (already ready/failed)',
+    schema: errorSchema,
+  })
+  async completeUpload(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<UploadCompletionResponseDto> {
+    const video = await this.videosService.completeUpload(user.sub, id);
+    return { id: video.id, public_id: video.public_id, status: video.status };
   }
 }

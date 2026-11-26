@@ -276,4 +276,82 @@ describe('Videos (e2e)', () => {
         .expect(401);
     });
   });
+
+  describe('POST /channels/me/videos/:id/upload-completion', () => {
+    function complete(user: AuthenticatedUser, id: string) {
+      return request(app.getHttpServer())
+        .post(`/channels/me/videos/${id}/upload-completion`)
+        .set('Authorization', `Bearer ${user.accessToken}`);
+    }
+
+    async function uploadedDraft(user: AuthenticatedUser): Promise<string> {
+      const body = Buffer.alloc(4096, 9);
+      const created = await initiate(user, {
+        ...validBody,
+        size_bytes: body.length,
+      }).expect(201);
+      const signed = await request(app.getHttpServer())
+        .post(`/channels/me/videos/${created.body.id}/upload-parts`)
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .send({ part_numbers: [1] })
+        .expect(200);
+      await fetch(signed.body.parts[0].url, { method: 'PUT', body });
+      return created.body.id;
+    }
+
+    it('returns 202 processing after all parts are uploaded, and again when repeated', async () => {
+      const id = await uploadedDraft(owner);
+
+      const first = await complete(owner, id).expect(202);
+      const second = await complete(owner, id).expect(202);
+
+      expect(first.body).toEqual({
+        id,
+        public_id: expect.stringMatching(/^[A-Za-z0-9]{11}$/),
+        status: 'processing',
+      });
+      expect(second.body.status).toBe('processing');
+    });
+
+    it('returns 409 UPLOAD_INCOMPLETE when no part was uploaded and keeps the draft', async () => {
+      const created = await initiate(owner).expect(201);
+
+      const res = await complete(owner, created.body.id).expect(409);
+
+      expect(res.body.error).toBe('UPLOAD_INCOMPLETE');
+      const row = await dataSource
+        .getRepository(Video)
+        .findOneByOrFail({ id: created.body.id });
+      expect(row.status).toBe('draft');
+    });
+
+    it.each(['ready', 'failed'] as const)(
+      'returns 409 VIDEO_NOT_UPLOADABLE for a %s video',
+      async (status) => {
+        const created = await initiate(owner).expect(201);
+        await dataSource.getRepository(Video).update(created.body.id, {
+          status: status as VideoStatus,
+          upload_id: null,
+        });
+
+        const res = await complete(owner, created.body.id).expect(409);
+
+        expect(res.body.error).toBe('VIDEO_NOT_UPLOADABLE');
+      },
+    );
+
+    it('returns 404 for another user video', async () => {
+      const created = await initiate(owner).expect(201);
+
+      const res = await complete(stranger, created.body.id).expect(404);
+
+      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+    });
+
+    it('returns 401 without a token', async () => {
+      await request(app.getHttpServer())
+        .post(`/channels/me/videos/${randomUUID()}/upload-completion`)
+        .expect(401);
+    });
+  });
 });

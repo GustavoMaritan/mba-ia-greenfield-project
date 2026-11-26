@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { S3ServiceException } from '@aws-sdk/client-s3';
 import { QueryFailedError, Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { PRESIGNED_URL_TTL_SECONDS } from '../storage/storage.constants';
-import { StorageService } from '../storage/storage.service';
+import { StorageService, type StoredPart } from '../storage/storage.service';
 import { Video, VideoStatus } from './entities/video.entity';
 import { generatePublicId } from './public-id.util';
+import { VideoProcessingProducer } from './video-processing.producer';
 import {
   MAX_PARTS_PER_SIGN_REQUEST,
   PUBLIC_ID_MAX_ATTEMPTS,
@@ -17,6 +19,7 @@ import {
 } from './videos.constants';
 import {
   InvalidPartNumberException,
+  UploadIncompleteException,
   VideoNotFoundException,
   VideoNotUploadableException,
 } from './videos.exceptions';
@@ -52,6 +55,10 @@ export interface UploadedPart {
 
 const PG_UNIQUE_VIOLATION = '23505';
 
+function isNoSuchUpload(err: unknown): boolean {
+  return err instanceof S3ServiceException && err.name === 'NoSuchUpload';
+}
+
 function isPublicIdCollision(err: unknown): boolean {
   if (!(err instanceof QueryFailedError)) return false;
   const driverError = err.driverError as { code?: string; detail?: string };
@@ -71,6 +78,17 @@ export function defaultTitle(filename: string): string {
   return (base || filename).slice(0, VIDEO_TITLE_MAX_LENGTH);
 }
 
+export function assertUploadComplete(video: Video, parts: StoredPart[]): void {
+  const partCount = partCountFor(video.size_bytes);
+  const numbers = parts.map((p) => p.partNumber);
+  const coversAll =
+    numbers.length === partCount && numbers.every((n, i) => n === i + 1);
+  const totalSize = parts.reduce((sum, p) => sum + p.size, 0);
+  if (!coversAll || totalSize !== video.size_bytes) {
+    throw new UploadIncompleteException();
+  }
+}
+
 @Injectable()
 export class VideosService {
   constructor(
@@ -78,6 +96,7 @@ export class VideosService {
     private readonly videoRepository: Repository<Video>,
     private readonly channelsService: ChannelsService,
     private readonly storageService: StorageService,
+    private readonly processingProducer: VideoProcessingProducer,
   ) {}
 
   async initiateUpload(
@@ -165,6 +184,52 @@ export class VideosService {
       etag: p.etag,
       size_bytes: p.size,
     }));
+  }
+
+  async completeUpload(userId: string, id: string): Promise<Video> {
+    const video = await this.findOwnedVideo(userId, id);
+
+    if (video.status === VideoStatus.Processing) {
+      // chamada repetida: só reenfileira (jobId deduplica)
+      await this.processingProducer.enqueue(video.id);
+      return video;
+    }
+    if (video.status !== VideoStatus.Draft || !video.upload_id) {
+      throw new VideoNotUploadableException();
+    }
+
+    try {
+      const parts = await this.storageService.listParts(
+        video.video_key,
+        video.upload_id,
+      );
+      assertUploadComplete(video, parts);
+      await this.storageService.completeMultipartUpload(
+        video.video_key,
+        video.upload_id,
+        parts,
+      );
+    } catch (err) {
+      // outra chamada concorrente já concluiu o multipart
+      if (isNoSuchUpload(err)) {
+        const current = await this.findOwnedVideo(userId, id);
+        if (current.status === VideoStatus.Processing) {
+          await this.processingProducer.enqueue(current.id);
+          return current;
+        }
+      }
+      throw err;
+    }
+
+    await this.videoRepository.update(
+      { id: video.id, status: VideoStatus.Draft },
+      { status: VideoStatus.Processing, upload_id: null },
+    );
+    await this.processingProducer.enqueue(video.id);
+
+    video.status = VideoStatus.Processing;
+    video.upload_id = null;
+    return video;
   }
 
   // só rascunhos (upload em andamento) aceitam assinar/listar partes
