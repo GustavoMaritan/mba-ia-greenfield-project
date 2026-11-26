@@ -118,3 +118,76 @@ Content-Type: {{contentType}}
   "token": "{{resetToken}}",
   "new_password": "new-password123"
 }
+
+
+###
+# ─────────────────────────────────────────────
+# VÍDEOS — UPLOAD (dono, autenticado)
+# O arquivo nunca passa pela API: cada parte de 64 MiB vai direto para a URL
+# assinada do MinIO. Para enviar uma parte pelo terminal:
+#   curl -X PUT --upload-file parte-001.bin "<url retornada em upload-parts>"
+# (gere as partes com: split -b 64M -d -a 3 video.mp4 parte-)
+# ─────────────────────────────────────────────
+
+@videoId = {{initiateVideo.response.body.$.id}}
+@publicId = {{initiateVideo.response.body.$.public_id}}
+
+### 10. Iniciar upload (cria o rascunho e abre o multipart)
+# @name initiateVideo
+POST {{baseUrl}}/channels/me/videos
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "filename": "aula-1.mp4",
+  "content_type": "video/mp4",
+  "size_bytes": 1048576
+}
+
+
+### 11. Consultar o vídeo (qualquer status: draft, processing, ready, failed)
+GET {{baseUrl}}/channels/me/videos/{{videoId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 12. Assinar partes (até 100 por chamada; URLs valem 1h)
+POST {{baseUrl}}/channels/me/videos/{{videoId}}/upload-parts
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "part_numbers": [1]
+}
+
+
+### 13. Listar partes já enviadas (retomada de upload interrompido)
+GET {{baseUrl}}/channels/me/videos/{{videoId}}/upload-parts
+Authorization: Bearer {{accessToken}}
+
+
+### 14. Concluir upload (fecha o multipart e enfileira o processamento) — 202
+POST {{baseUrl}}/channels/me/videos/{{videoId}}/upload-completion
+Authorization: Bearer {{accessToken}}
+
+
+###
+# ─────────────────────────────────────────────
+# VÍDEOS — ENTREGA PÚBLICA (anônimo, só status ready)
+# stream/download/thumbnail respondem 302 para uma URL assinada do MinIO,
+# que atende Range com 206 Partial Content
+# ─────────────────────────────────────────────
+
+### 15. Detalhes públicos
+GET {{baseUrl}}/videos/{{publicId}}
+
+
+### 16. Streaming (302 → storage; teste o Range: curl -L -H "Range: bytes=0-99" ...)
+GET {{baseUrl}}/videos/{{publicId}}/stream
+
+
+### 17. Download (302 → storage com Content-Disposition: attachment)
+GET {{baseUrl}}/videos/{{publicId}}/download
+
+
+### 18. Thumbnail (302 → storage, image/jpeg)
+GET {{baseUrl}}/videos/{{publicId}}/thumbnail
