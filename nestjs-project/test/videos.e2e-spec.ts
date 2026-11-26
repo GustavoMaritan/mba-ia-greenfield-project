@@ -354,4 +354,37 @@ describe('Videos (e2e)', () => {
         .expect(401);
     });
   });
+
+  describe('public routes', () => {
+    const routes = ['', '/stream', '/download', '/thumbnail'];
+
+    it.each(['draft', 'processing', 'failed'] as const)(
+      'answer 404 VIDEO_NOT_FOUND to anonymous users for a %s video',
+      async (status) => {
+        const created = await initiate(owner).expect(201);
+        await dataSource
+          .getRepository(Video)
+          .update(created.body.id, { status: status as VideoStatus });
+
+        for (const route of routes) {
+          const res = await request(app.getHttpServer())
+            .get(`/videos/${created.body.public_id}${route}`)
+            .expect(404);
+          expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+        }
+      },
+    );
+
+    it.each(['ZZZZZZZZZZZ', 'abc'])(
+      'answer 404 VIDEO_NOT_FOUND for unknown or malformed id %s',
+      async (publicId) => {
+        for (const route of routes) {
+          const res = await request(app.getHttpServer())
+            .get(`/videos/${publicId}${route}`)
+            .expect(404);
+          expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+        }
+      },
+    );
+  });
 });

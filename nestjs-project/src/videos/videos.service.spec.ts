@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { QueryFailedError } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
+import { StorageBucket } from '../storage/storage.constants';
 import { StorageService } from '../storage/storage.service';
 import { S3ServiceException } from '@aws-sdk/client-s3';
 import { Video, VideoStatus } from './entities/video.entity';
@@ -375,6 +376,75 @@ describe('VideosService', () => {
       expect(video.status).toBe(VideoStatus.Processing);
       expect(producer.enqueue).toHaveBeenCalledWith('video-1');
       expect(videoRepository.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('public delivery', () => {
+    const ready = () =>
+      makeVideo({
+        status: VideoStatus.Ready,
+        upload_id: null,
+        thumbnail_key: 'video-1/thumbnail.jpg',
+      });
+
+    it('should not even query for a malformed public id', async () => {
+      await expect(service.findReadyByPublicId('abc')).rejects.toBeInstanceOf(
+        VideoNotFoundException,
+      );
+      expect(videoRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('should only look up ready videos', async () => {
+      videoRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.findReadyByPublicId('AAAAAAAAAAA'),
+      ).rejects.toBeInstanceOf(VideoNotFoundException);
+      expect(videoRepository.findOne).toHaveBeenCalledWith({
+        where: { public_id: 'AAAAAAAAAAA', status: VideoStatus.Ready },
+        relations: { channel: true },
+      });
+    });
+
+    it('should presign the original for streaming', async () => {
+      videoRepository.findOne.mockResolvedValue(ready());
+      storageService.presignPublicGet.mockResolvedValue('http://s/stream');
+
+      await expect(service.getStreamUrl('AAAAAAAAAAA')).resolves.toBe(
+        'http://s/stream',
+      );
+      expect(storageService.presignPublicGet).toHaveBeenCalledWith(
+        StorageBucket.Videos,
+        'video-1/original',
+      );
+    });
+
+    it('should pass the original filename for downloads', async () => {
+      videoRepository.findOne.mockResolvedValue(ready());
+
+      await service.getDownloadUrl('AAAAAAAAAAA');
+
+      expect(storageService.presignPublicGet).toHaveBeenCalledWith(
+        StorageBucket.Videos,
+        'video-1/original',
+        { downloadFilename: 'aula.mp4' },
+      );
+    });
+
+    it('should presign the thumbnail and 404 when there is none', async () => {
+      videoRepository.findOne.mockResolvedValueOnce(ready());
+      await service.getThumbnailUrl('AAAAAAAAAAA');
+      expect(storageService.presignPublicGet).toHaveBeenCalledWith(
+        StorageBucket.Thumbnails,
+        'video-1/thumbnail.jpg',
+      );
+
+      videoRepository.findOne.mockResolvedValueOnce(
+        makeVideo({ status: VideoStatus.Ready, thumbnail_key: null }),
+      );
+      await expect(
+        service.getThumbnailUrl('AAAAAAAAAAA'),
+      ).rejects.toBeInstanceOf(VideoNotFoundException);
     });
   });
 });

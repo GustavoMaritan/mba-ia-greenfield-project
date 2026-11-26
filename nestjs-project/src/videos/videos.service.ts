@@ -5,7 +5,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { S3ServiceException } from '@aws-sdk/client-s3';
 import { QueryFailedError, Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
-import { PRESIGNED_URL_TTL_SECONDS } from '../storage/storage.constants';
+import {
+  PRESIGNED_URL_TTL_SECONDS,
+  StorageBucket,
+} from '../storage/storage.constants';
 import { StorageService, type StoredPart } from '../storage/storage.service';
 import {
   Video,
@@ -18,6 +21,7 @@ import {
   FAILURE_REASON_MAX_LENGTH,
   MAX_PARTS_PER_SIGN_REQUEST,
   PUBLIC_ID_MAX_ATTEMPTS,
+  PUBLIC_ID_PATTERN,
   UPLOAD_PART_SIZE_BYTES,
   VIDEO_KEYS,
   VIDEO_TITLE_MAX_LENGTH,
@@ -241,6 +245,43 @@ export class VideosService {
     video.status = VideoStatus.Processing;
     video.upload_id = null;
     return video;
+  }
+
+  // rotas públicas: só vídeos prontos; qualquer outro caso é 404
+  async findReadyByPublicId(publicId: string): Promise<Video> {
+    if (!PUBLIC_ID_PATTERN.test(publicId)) throw new VideoNotFoundException();
+    const video = await this.videoRepository.findOne({
+      where: { public_id: publicId, status: VideoStatus.Ready },
+      relations: { channel: true },
+    });
+    if (!video) throw new VideoNotFoundException();
+    return video;
+  }
+
+  async getStreamUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignPublicGet(
+      StorageBucket.Videos,
+      video.video_key,
+    );
+  }
+
+  async getDownloadUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignPublicGet(
+      StorageBucket.Videos,
+      video.video_key,
+      { downloadFilename: video.original_filename },
+    );
+  }
+
+  async getThumbnailUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    if (!video.thumbnail_key) throw new VideoNotFoundException();
+    return this.storageService.presignPublicGet(
+      StorageBucket.Thumbnails,
+      video.thumbnail_key,
+    );
   }
 
   async findById(id: string): Promise<Video | null> {
