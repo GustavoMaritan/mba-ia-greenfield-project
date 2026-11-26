@@ -3,9 +3,9 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-11-26T02:47:24-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-11-26T03:12:50-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-11-26T03:16:32-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-11-26T02:47:35-03:00"
-  docs/phases/phase-03-videos/library-refs.md: "2026-11-26T03:15:22-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-11-26T03:18:09-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-11-26T02:47:35-03:00"
   docs/phases/phase-01-configuracao-base/phase-01-configuracao-base.md: "2026-11-26T02:47:35-03:00"
   docs/phases/phase-02-auth/context.md: "2026-11-26T02:47:35-03:00"
