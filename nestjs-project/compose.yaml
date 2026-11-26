@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-streamtube}
 
 services:
   nestjs-api:
-    build:
+    build: 
       context: .
       dockerfile: Dockerfile.dev
     ports:
@@ -14,6 +14,10 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   db:
     image: postgres:17
@@ -34,3 +38,35 @@ services:
     ports:
       - "${MAILPIT_SMTP_HOST_PORT:-1025}:1025"
       - "${MAILPIT_UI_HOST_PORT:-8025}:8025"
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --maxmemory-policy noeviction
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    # imagens oficiais minio/minio não estão mais disponíveis; rebuild da comunidade
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: server /data --console-address :9001
+    environment:
+      - MINIO_ROOT_USER=${STORAGE_ACCESS_KEY:-streamtube}
+      - MINIO_ROOT_PASSWORD=${STORAGE_SECRET_KEY:-streamtube-secret}
+    ports:
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  minio-data:
