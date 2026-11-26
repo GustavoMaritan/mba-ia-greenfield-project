@@ -5,6 +5,9 @@ import { buildSwaggerDocument } from './swagger/swagger-document';
 
 export async function exportSpec(outputPath = 'openapi.json'): Promise<void> {
   const app = await NestFactory.create(AppModule, { logger: false });
+  // init completo: fechar o app antes das conexões (redis da fila) ficarem
+  // prontas gera "Connection is closed" não tratado no ioredis
+  await app.init();
   const document = buildSwaggerDocument(app);
   writeFileSync(outputPath, JSON.stringify(document, null, 2));
   await app.close();
