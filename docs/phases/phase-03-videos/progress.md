@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 8/12 completed
+**SIs:** 9/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -67,9 +67,12 @@
   - O vídeo sem áudio do teste é gerado na hora (`-an`) em vez de commitar outra fixture.
 
 ### SI-03.9 — VideoProcessingProcessor: processamento do job, thumbnail e política de falha
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 75/75 em src/videos + src/video-processing (video-processing.processor.spec: 10, video-processing.processor.integration-spec: 6 com DB+MinIO+ffmpeg reais, video-processing.module.spec: 1)
+- **Observations:**
+  - Conferido no código do `bullmq@5.81.6` instalado (`Job.moveToFailed`): `attemptsMade` é incrementado antes do evento `failed`, então a última tentativa é `attemptsMade >= opts.attempts`.
+  - No integration spec o processor é montado com `new` a partir dos serviços reais do módulo, para não subir um Worker do BullMQ dentro do processo de teste (ele competiria com o container `video-worker` pelos jobs).
+  - `onFailed` é handler de evento do worker: se o `markFailed` falhar, só loga (regra de background tasks em nestjs-services.md).
 
 ### SI-03.10 — Runtime do worker: `worker.ts`, `WorkerModule` e serviço `video-worker`
 - **Status:** pending
