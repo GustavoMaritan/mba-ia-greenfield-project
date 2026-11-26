@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 7/12 completed
+**SIs:** 8/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -59,9 +59,12 @@
   - Helper `createVideosTestingModule` passou a registrar o `BullModule.forRootAsync`.
 
 ### SI-03.8 — FfmpegService: extração de metadados (ffprobe) e thumbnail (ffmpeg)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 13/13 passing (ffprobe-metadata.spec: 8, ffmpeg.service.integration-spec: 5 com binários reais)
+- **Observations:**
+  - Fixture `test/fixtures/sample.mp4` (45 KB, 3 s, 320x240, H.264+AAC) gerada com `-movflags +faststart`; `.gitattributes` marca mp4/jpg como binário (o repo usa autocrlf).
+  - Erro do ffprobe com 'Invalid data found' vira `UnrecoverableError`; timeout/falha de processo segue retentável.
+  - O vídeo sem áudio do teste é gerado na hora (`-an`) em vez de commitar outra fixture.
 
 ### SI-03.9 — VideoProcessingProcessor: processamento do job, thumbnail e política de falha
 - **Status:** pending
