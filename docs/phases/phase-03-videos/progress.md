@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 5/12 completed
+**SIs:** 6/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -44,9 +44,11 @@
   - A conferência do `openapi.json` exportado ficou para a SI-03.12, junto da reexportação.
 
 ### SI-03.6 — Upload multipart: assinar partes e listar partes enviadas (retomada)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** unit+integration de vídeos 36/36 (videos.service.spec +7, videos.service.integration-spec +1); e2e videos 19/19 (+9)
+- **Observations:**
+  - `test/setup-e2e-env.ts` entra em `setupFiles` do `jest-e2e.json` como `<rootDir>/setup-e2e-env.ts` (o rootDir do e2e já é `test/`).
+  - Guarda de status também exige `upload_id` presente; vídeo sem upload aberto responde `VIDEO_NOT_UPLOADABLE`.
 
 ### SI-03.7 — Conclusão do upload e enfileiramento do processamento
 - **Status:** pending
