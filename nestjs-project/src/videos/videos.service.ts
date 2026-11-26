@@ -7,10 +7,15 @@ import { QueryFailedError, Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { PRESIGNED_URL_TTL_SECONDS } from '../storage/storage.constants';
 import { StorageService, type StoredPart } from '../storage/storage.service';
-import { Video, VideoStatus } from './entities/video.entity';
+import {
+  Video,
+  VideoStatus,
+  type VideoMetadata,
+} from './entities/video.entity';
 import { generatePublicId } from './public-id.util';
 import { VideoProcessingProducer } from './video-processing.producer';
 import {
+  FAILURE_REASON_MAX_LENGTH,
   MAX_PARTS_PER_SIGN_REQUEST,
   PUBLIC_ID_MAX_ATTEMPTS,
   UPLOAD_PART_SIZE_BYTES,
@@ -40,6 +45,12 @@ export interface UploadPlan {
 export interface InitiatedUpload {
   video: Video;
   upload: UploadPlan;
+}
+
+export interface ProcessingResult {
+  durationSeconds: number;
+  metadata: VideoMetadata;
+  thumbnailKey: string;
 }
 
 export interface SignedUploadParts {
@@ -230,6 +241,28 @@ export class VideosService {
     video.status = VideoStatus.Processing;
     video.upload_id = null;
     return video;
+  }
+
+  async findById(id: string): Promise<Video | null> {
+    return this.videoRepository.findOne({ where: { id } });
+  }
+
+  async markReady(id: string, result: ProcessingResult): Promise<void> {
+    await this.videoRepository.update(id, {
+      status: VideoStatus.Ready,
+      duration_seconds: result.durationSeconds,
+      metadata: result.metadata,
+      thumbnail_key: result.thumbnailKey,
+      processed_at: new Date(),
+      failure_reason: null,
+    });
+  }
+
+  async markFailed(id: string, reason: string): Promise<void> {
+    await this.videoRepository.update(id, {
+      status: VideoStatus.Failed,
+      failure_reason: reason.slice(0, FAILURE_REASON_MAX_LENGTH),
+    });
   }
 
   // só rascunhos (upload em andamento) aceitam assinar/listar partes
