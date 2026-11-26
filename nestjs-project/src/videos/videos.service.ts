@@ -1,0 +1,337 @@
+import { randomUUID } from 'node:crypto';
+import { extname } from 'node:path';
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { S3ServiceException } from '@aws-sdk/client-s3';
+import { QueryFailedError, Repository } from 'typeorm';
+import { ChannelsService } from '../channels/channels.service';
+import {
+  PRESIGNED_URL_TTL_SECONDS,
+  StorageBucket,
+} from '../storage/storage.constants';
+import { StorageService, type StoredPart } from '../storage/storage.service';
+import {
+  Video,
+  VideoStatus,
+  type VideoMetadata,
+} from './entities/video.entity';
+import { generatePublicId } from './public-id.util';
+import { VideoProcessingProducer } from './video-processing.producer';
+import {
+  FAILURE_REASON_MAX_LENGTH,
+  MAX_PARTS_PER_SIGN_REQUEST,
+  PUBLIC_ID_MAX_ATTEMPTS,
+  PUBLIC_ID_PATTERN,
+  UPLOAD_PART_SIZE_BYTES,
+  VIDEO_KEYS,
+  VIDEO_TITLE_MAX_LENGTH,
+} from './videos.constants';
+import {
+  InvalidPartNumberException,
+  UploadIncompleteException,
+  VideoNotFoundException,
+  VideoNotUploadableException,
+} from './videos.exceptions';
+
+export interface InitiateUploadInput {
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  title?: string;
+}
+
+export interface UploadPlan {
+  part_size_bytes: number;
+  part_count: number;
+  max_parts_per_request: number;
+}
+
+export interface InitiatedUpload {
+  video: Video;
+  upload: UploadPlan;
+}
+
+export interface ProcessingResult {
+  durationSeconds: number;
+  metadata: VideoMetadata;
+  thumbnailKey: string;
+}
+
+export interface SignedUploadParts {
+  parts: { part_number: number; url: string }[];
+  expires_at: Date;
+}
+
+export interface UploadedPart {
+  part_number: number;
+  etag: string;
+  size_bytes: number;
+}
+
+const PG_UNIQUE_VIOLATION = '23505';
+
+function isNoSuchUpload(err: unknown): boolean {
+  return err instanceof S3ServiceException && err.name === 'NoSuchUpload';
+}
+
+function isPublicIdCollision(err: unknown): boolean {
+  if (!(err instanceof QueryFailedError)) return false;
+  const driverError = err.driverError as { code?: string; detail?: string };
+  return (
+    driverError?.code === PG_UNIQUE_VIOLATION &&
+    typeof driverError.detail === 'string' &&
+    driverError.detail.includes('public_id')
+  );
+}
+
+export function partCountFor(sizeBytes: number): number {
+  return Math.ceil(sizeBytes / UPLOAD_PART_SIZE_BYTES);
+}
+
+export function defaultTitle(filename: string): string {
+  const base = filename.slice(0, filename.length - extname(filename).length);
+  return (base || filename).slice(0, VIDEO_TITLE_MAX_LENGTH);
+}
+
+export function assertUploadComplete(video: Video, parts: StoredPart[]): void {
+  const partCount = partCountFor(video.size_bytes);
+  const numbers = parts.map((p) => p.partNumber);
+  const coversAll =
+    numbers.length === partCount && numbers.every((n, i) => n === i + 1);
+  const totalSize = parts.reduce((sum, p) => sum + p.size, 0);
+  if (!coversAll || totalSize !== video.size_bytes) {
+    throw new UploadIncompleteException();
+  }
+}
+
+@Injectable()
+export class VideosService {
+  constructor(
+    @InjectRepository(Video)
+    private readonly videoRepository: Repository<Video>,
+    private readonly channelsService: ChannelsService,
+    private readonly storageService: StorageService,
+    private readonly processingProducer: VideoProcessingProducer,
+  ) {}
+
+  async initiateUpload(
+    userId: string,
+    input: InitiateUploadInput,
+  ): Promise<InitiatedUpload> {
+    const channel = await this.channelsService.findByUserId(userId);
+    if (!channel) throw new VideoNotFoundException();
+
+    // id gerado antes do insert para montar a chave do objeto
+    const id = randomUUID();
+    const videoKey = VIDEO_KEYS.original(id);
+    const uploadId = await this.storageService.createMultipartUpload(
+      videoKey,
+      input.content_type,
+    );
+
+    const video = await this.insertWithUniquePublicId({
+      id,
+      channel_id: channel.id,
+      title: input.title ?? defaultTitle(input.filename),
+      original_filename: input.filename,
+      content_type: input.content_type,
+      size_bytes: input.size_bytes,
+      status: VideoStatus.Draft,
+      upload_id: uploadId,
+      video_key: videoKey,
+    });
+
+    return {
+      video,
+      upload: {
+        part_size_bytes: UPLOAD_PART_SIZE_BYTES,
+        part_count: partCountFor(input.size_bytes),
+        max_parts_per_request: MAX_PARTS_PER_SIGN_REQUEST,
+      },
+    };
+  }
+
+  async findOwnedVideo(userId: string, id: string): Promise<Video> {
+    const channel = await this.channelsService.findByUserId(userId);
+    if (!channel) throw new VideoNotFoundException();
+
+    const video = await this.videoRepository.findOne({
+      where: { id, channel_id: channel.id },
+    });
+    // vídeo de outro canal responde igual a inexistente
+    if (!video) throw new VideoNotFoundException();
+    return video;
+  }
+
+  async signUploadParts(
+    userId: string,
+    id: string,
+    partNumbers: number[],
+  ): Promise<SignedUploadParts> {
+    const video = await this.findUploadableVideo(userId, id);
+    const partCount = partCountFor(video.size_bytes);
+    if (partNumbers.some((n) => n > partCount)) {
+      throw new InvalidPartNumberException();
+    }
+
+    const expiresAt = new Date(Date.now() + PRESIGNED_URL_TTL_SECONDS * 1000);
+    const parts = await Promise.all(
+      partNumbers.map(async (partNumber) => ({
+        part_number: partNumber,
+        url: await this.storageService.presignUploadPart(
+          video.video_key,
+          video.upload_id!,
+          partNumber,
+        ),
+      })),
+    );
+    return { parts, expires_at: expiresAt };
+  }
+
+  async listUploadedParts(userId: string, id: string): Promise<UploadedPart[]> {
+    const video = await this.findUploadableVideo(userId, id);
+    const parts = await this.storageService.listParts(
+      video.video_key,
+      video.upload_id!,
+    );
+    return parts.map((p) => ({
+      part_number: p.partNumber,
+      etag: p.etag,
+      size_bytes: p.size,
+    }));
+  }
+
+  async completeUpload(userId: string, id: string): Promise<Video> {
+    const video = await this.findOwnedVideo(userId, id);
+
+    if (video.status === VideoStatus.Processing) {
+      // chamada repetida: só reenfileira (jobId deduplica)
+      await this.processingProducer.enqueue(video.id);
+      return video;
+    }
+    if (video.status !== VideoStatus.Draft || !video.upload_id) {
+      throw new VideoNotUploadableException();
+    }
+
+    try {
+      const parts = await this.storageService.listParts(
+        video.video_key,
+        video.upload_id,
+      );
+      assertUploadComplete(video, parts);
+      await this.storageService.completeMultipartUpload(
+        video.video_key,
+        video.upload_id,
+        parts,
+      );
+    } catch (err) {
+      // outra chamada concorrente já concluiu o multipart
+      if (isNoSuchUpload(err)) {
+        const current = await this.findOwnedVideo(userId, id);
+        if (current.status === VideoStatus.Processing) {
+          await this.processingProducer.enqueue(current.id);
+          return current;
+        }
+      }
+      throw err;
+    }
+
+    await this.videoRepository.update(
+      { id: video.id, status: VideoStatus.Draft },
+      { status: VideoStatus.Processing, upload_id: null },
+    );
+    await this.processingProducer.enqueue(video.id);
+
+    video.status = VideoStatus.Processing;
+    video.upload_id = null;
+    return video;
+  }
+
+  // rotas públicas: só vídeos prontos; qualquer outro caso é 404
+  async findReadyByPublicId(publicId: string): Promise<Video> {
+    if (!PUBLIC_ID_PATTERN.test(publicId)) throw new VideoNotFoundException();
+    const video = await this.videoRepository.findOne({
+      where: { public_id: publicId, status: VideoStatus.Ready },
+      relations: { channel: true },
+    });
+    if (!video) throw new VideoNotFoundException();
+    return video;
+  }
+
+  async getStreamUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignPublicGet(
+      StorageBucket.Videos,
+      video.video_key,
+    );
+  }
+
+  async getDownloadUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignPublicGet(
+      StorageBucket.Videos,
+      video.video_key,
+      { downloadFilename: video.original_filename },
+    );
+  }
+
+  async getThumbnailUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    if (!video.thumbnail_key) throw new VideoNotFoundException();
+    return this.storageService.presignPublicGet(
+      StorageBucket.Thumbnails,
+      video.thumbnail_key,
+    );
+  }
+
+  async findById(id: string): Promise<Video | null> {
+    return this.videoRepository.findOne({ where: { id } });
+  }
+
+  async markReady(id: string, result: ProcessingResult): Promise<void> {
+    await this.videoRepository.update(id, {
+      status: VideoStatus.Ready,
+      duration_seconds: result.durationSeconds,
+      metadata: result.metadata,
+      thumbnail_key: result.thumbnailKey,
+      processed_at: new Date(),
+      failure_reason: null,
+    });
+  }
+
+  async markFailed(id: string, reason: string): Promise<void> {
+    await this.videoRepository.update(id, {
+      status: VideoStatus.Failed,
+      failure_reason: reason.slice(0, FAILURE_REASON_MAX_LENGTH),
+    });
+  }
+
+  // só rascunhos (upload em andamento) aceitam assinar/listar partes
+  private async findUploadableVideo(
+    userId: string,
+    id: string,
+  ): Promise<Video> {
+    const video = await this.findOwnedVideo(userId, id);
+    if (video.status !== VideoStatus.Draft || !video.upload_id) {
+      throw new VideoNotUploadableException();
+    }
+    return video;
+  }
+
+  private async insertWithUniquePublicId(data: Partial<Video>): Promise<Video> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.videoRepository.save(
+          this.videoRepository.create({
+            ...data,
+            public_id: generatePublicId(),
+          }),
+        );
+      } catch (err) {
+        if (!isPublicIdCollision(err) || attempt >= PUBLIC_ID_MAX_ATTEMPTS) {
+          throw err;
+        }
+      }
+    }
+  }
+}

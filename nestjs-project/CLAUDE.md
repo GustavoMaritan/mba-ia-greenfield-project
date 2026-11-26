@@ -13,6 +13,11 @@ docker compose ps   # all services must show status "running"
 Then verify each infrastructure service is actually ready to accept connections — not just running:
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
+- **Redis (queue):** `docker compose exec redis redis-cli ping` — expect `PONG`
+- **MinIO (storage):** `curl -fsS http://localhost:${MINIO_API_HOST_PORT:-9000}/minio/health/live` — expect HTTP 200
+- **Video worker:** `docker compose logs video-worker` — expect `Video worker ready (queue: video-processing)`
+
+`video-worker` counts as infrastructure for this rule: it consumes the processing queue in its own container and must be up for uploads to reach `ready` (and for `test/videos-processing.e2e-spec.ts`).
 
 Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
 
@@ -31,9 +36,15 @@ docker compose exec nestjs-api npm install
 docker compose exec nestjs-api npm run start:dev
 ```
 
-Services:
-- `nestjs-api` — NestJS API, port `3000`
-- `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+Services (host ports come from `.env` — `API_HOST_PORT`, `DB_HOST_PORT`, `REDIS_HOST_PORT`, `MINIO_API_HOST_PORT`, `MINIO_CONSOLE_HOST_PORT`, `MAILPIT_*_HOST_PORT`; defaults in parentheses):
+- `nestjs-api` — NestJS API (`3000`)
+- `video-worker` — same image and volume as the API, runs `npm run start:worker:dev` (no published port)
+- `db` — PostgreSQL 17 (`5432`), database `streamtube`, user/password `streamtube`
+- `redis` — Redis 7.4 for the BullMQ queue (`6379`), `maxmemory-policy noeviction`
+- `minio` — S3-compatible object storage, image `pgsty/minio` (official `minio/minio` images are no longer published); API (`9000`), console (`9001`), user/password = `STORAGE_ACCESS_KEY`/`STORAGE_SECRET_KEY`
+- `mailpit` — SMTP (`1025`) and web UI (`8025`)
+
+The image (`Dockerfile.dev`) ships `ffmpeg`/`ffprobe`, used by the worker and by `ffmpeg.service.integration-spec.ts`.
 
 All verification and teardown commands run on the **host machine**:
 
@@ -62,6 +73,9 @@ docker compose down
 npm run start:dev                        # Dev server with hot-reload
 npm run build                            # Compile to dist/
 npm run start:prod                       # Run compiled build
+npm run start:worker:dev                 # Video worker in watch mode (output in dist-worker/)
+npm run start:worker:prod                # Compiled worker (dist/worker.js)
+npm run openapi:export                   # Regenerate openapi.json (needs db/redis/minio up)
 
 npm test                                 # Unit tests
 npm run test:watch                       # Unit tests in watch mode
@@ -155,6 +169,49 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 - **Decorators:** `emitDecoratorMetadata` + `experimentalDecorators` enabled — required for NestJS DI
 - **Prettier:** single quotes, trailing commas everywhere
 - **ESLint:** `no-explicit-any` allowed; `no-floating-promises` and `no-unsafe-argument` are warnings
+
+## Videos (Phase 03)
+
+Plan and decisions: `docs/phases/phase-03-videos/` and `docs/decisions/technical-decisions-phase-03-videos.md`.
+
+### Modules
+
+- `src/storage/` — `StorageModule`/`StorageService` (AWS SDK v3 against MinIO). Two S3 clients: **internal** (`STORAGE_ENDPOINT=http://minio:9000`, server → storage calls) and **public** (`STORAGE_PUBLIC_ENDPOINT`, used only to sign URLs the browser will call — it must point at the host-published MinIO API port). Buckets `videos` and `thumbnails` are created idempotently on module init. Every presigned URL expires in 3600 s.
+- `src/videos/` — `VideosModule`: entity `Video` (table `videos`), `VideosService`, `ChannelVideosController` (owner routes), `PublicVideosController` (anonymous routes) and `VideoProcessingProducer` (enqueues jobs). The API never consumes the queue.
+- `src/video-processing/` — worker-only `VideoProcessingModule`: `VideoProcessingProcessor` (BullMQ `WorkerHost`, concurrency 2) and `FfmpegService` (`ffprobe`/`ffmpeg` via `execFile`, reading the original through an internal presigned URL with range requests — the file is never downloaded whole). **Never import it in `AppModule`.**
+- `src/worker.ts` + `src/worker.module.ts` — Nest application context (no HTTP) for the `video-worker` container. Shared factories with the API: `config/config-module.options.ts`, `database/typeorm-options.factory.ts`, `config/bull-root.options.ts`.
+
+### Endpoints
+
+| Route | Auth | Notes |
+|---|---|---|
+| `POST /channels/me/videos` | JWT | Creates the `draft` and opens the S3 multipart; returns `public_id` and `upload { part_size_bytes: 64 MiB, part_count, max_parts_per_request: 100 }`. Max size 10 GiB. |
+| `GET /channels/me/videos/:id` | JWT, owner | Any status. A video of another channel answers `404 VIDEO_NOT_FOUND`. |
+| `POST /channels/me/videos/:id/upload-parts` | JWT, owner | Signs `part_numbers` (presigned `UploadPart`); the client `PUT`s each part straight to MinIO. `draft` only. |
+| `GET /channels/me/videos/:id/upload-parts` | JWT, owner | Parts already stored (resume). `draft` only. |
+| `POST /channels/me/videos/:id/upload-completion` | JWT, owner | `202`: completes the multipart (part list built from `ListParts`), moves `draft → processing`, enqueues the job. Repeating it while `processing` is harmless. |
+| `GET /videos/:publicId` | public | Details, `ready` only. |
+| `GET /videos/:publicId/stream`, `/download`, `/thumbnail` | public | `302` to a presigned storage URL (`Cache-Control: no-store`); storage answers `Range` with `206`. The download URL carries `Content-Disposition: attachment`. |
+
+No endpoint accepts video bytes. Status lifecycle: `draft → processing → ready | failed` (single enum `video_status`); publication/visibility belongs to Phase 04.
+
+### Queue and worker
+
+- Queue `video-processing`, job `process`, payload `{ videoId }`, `jobId = videoId` (dedup), `attempts: 3`, exponential backoff starting at 5 s.
+- Worker: loads the video (missing or already `ready` → skip), `ffprobe` → `duration_seconds` + `metadata` (jsonb), thumbnail frame at `min(1s, duration/2)` → `thumbnails/{videoId}/thumbnail.jpg`, then `status = ready`.
+- Failure: `onFailed` sets `failed` + `failure_reason` only on the last attempt or on `UnrecoverableError` (input that is not a readable video).
+- Object keys: `videos/{videoId}/original`, `thumbnails/{videoId}/thumbnail.jpg`.
+
+### Testing notes
+
+- Integration and e2e tests run inside `nestjs-api`, where URLs signed with `STORAGE_PUBLIC_ENDPOINT` (localhost) are unreachable. `test/setup-e2e-env.ts` and `src/test/videos-test-module.ts` override it with `STORAGE_ENDPOINT` in the test process.
+- `test/videos-processing.e2e-spec.ts` needs `docker compose up -d video-worker` (it polls until `ready`, 60 s timeout).
+- Never start a BullMQ `Worker` inside unit/integration tests: the processor integration spec builds the processor by hand so it does not compete with `video-worker` for jobs.
+- Fixture: `test/fixtures/sample.mp4` (3 s, 320x240, H.264 + AAC).
+
+### Manual check — large upload
+
+Validated on 2026-11-26 with a 1.61 GiB file (26 parts of 64 MiB; half uploaded, parts listed, the rest resumed): upload straight to MinIO at ~70 MiB/s, worker reached `ready` in ~2 s reading ~6 MB through range requests, `GET /` kept answering 200 (max 5 ms) the whole time, and `docker stats` showed ~1.73 GB received by `minio` against ~0.1 MB by `nestjs-api`. To repeat it, follow the "VÍDEOS" section of `api.http` (initiate → sign parts → `curl -X PUT --upload-file <part> "<url>"` per part → completion → public routes) with the host ports from `.env`.
 
 ## REST Conventions
 
