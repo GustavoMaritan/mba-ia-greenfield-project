@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 10/12 completed
+**SIs:** 11/12 completed
 
 ### SI-03.1 — Infra: dependências, Redis, MinIO, FFmpeg e namespaces `storage`/`queue`
 - **Status:** completed
@@ -84,9 +84,11 @@
   - `--entryFile`/`--path` do Nest CLI 11 funcionaram como o plano previa (watch do worker compila em `dist-worker/`).
 
 ### SI-03.11 — Entrega pública: detalhes, streaming, download e thumbnail por `public_id`
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** videos.service.spec 33/33 (+5); suíte e2e completa 84/84 com o video-worker rodando (videos.e2e-spec +5, videos-processing.e2e-spec 2)
+- **Observations:**
+  - O fluxo ponta a ponta (`test/videos-processing.e2e-spec.ts`) usa o container `video-worker` real: upload por URL assinada → `upload-completion` → polling até `ready` → `stream` 302 cujo Location responde 206 a `Range: bytes=0-99`, `download` com `Content-Disposition: attachment` (nome UTF-8) e `thumbnail` `image/jpeg`.
+  - Com `@Res()` o `@Header` do Nest não é aplicado; o `Cache-Control: no-store` dos redirects é setado direto na resposta.
 
 ### SI-03.12 — Documentação: CLAUDE.md, api.http, openapi.json e verificação manual de 1GB
 - **Status:** pending
