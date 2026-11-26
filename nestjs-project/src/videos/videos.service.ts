@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
+import { PRESIGNED_URL_TTL_SECONDS } from '../storage/storage.constants';
 import { StorageService } from '../storage/storage.service';
 import { Video, VideoStatus } from './entities/video.entity';
 import { generatePublicId } from './public-id.util';
@@ -14,7 +15,11 @@ import {
   VIDEO_KEYS,
   VIDEO_TITLE_MAX_LENGTH,
 } from './videos.constants';
-import { VideoNotFoundException } from './videos.exceptions';
+import {
+  InvalidPartNumberException,
+  VideoNotFoundException,
+  VideoNotUploadableException,
+} from './videos.exceptions';
 
 export interface InitiateUploadInput {
   filename: string;
@@ -32,6 +37,17 @@ export interface UploadPlan {
 export interface InitiatedUpload {
   video: Video;
   upload: UploadPlan;
+}
+
+export interface SignedUploadParts {
+  parts: { part_number: number; url: string }[];
+  expires_at: Date;
+}
+
+export interface UploadedPart {
+  part_number: number;
+  etag: string;
+  size_bytes: number;
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
@@ -110,6 +126,56 @@ export class VideosService {
     });
     // vídeo de outro canal responde igual a inexistente
     if (!video) throw new VideoNotFoundException();
+    return video;
+  }
+
+  async signUploadParts(
+    userId: string,
+    id: string,
+    partNumbers: number[],
+  ): Promise<SignedUploadParts> {
+    const video = await this.findUploadableVideo(userId, id);
+    const partCount = partCountFor(video.size_bytes);
+    if (partNumbers.some((n) => n > partCount)) {
+      throw new InvalidPartNumberException();
+    }
+
+    const expiresAt = new Date(Date.now() + PRESIGNED_URL_TTL_SECONDS * 1000);
+    const parts = await Promise.all(
+      partNumbers.map(async (partNumber) => ({
+        part_number: partNumber,
+        url: await this.storageService.presignUploadPart(
+          video.video_key,
+          video.upload_id!,
+          partNumber,
+        ),
+      })),
+    );
+    return { parts, expires_at: expiresAt };
+  }
+
+  async listUploadedParts(userId: string, id: string): Promise<UploadedPart[]> {
+    const video = await this.findUploadableVideo(userId, id);
+    const parts = await this.storageService.listParts(
+      video.video_key,
+      video.upload_id!,
+    );
+    return parts.map((p) => ({
+      part_number: p.partNumber,
+      etag: p.etag,
+      size_bytes: p.size,
+    }));
+  }
+
+  // só rascunhos (upload em andamento) aceitam assinar/listar partes
+  private async findUploadableVideo(
+    userId: string,
+    id: string,
+  ): Promise<Video> {
+    const video = await this.findOwnedVideo(userId, id);
+    if (video.status !== VideoStatus.Draft || !video.upload_id) {
+      throw new VideoNotUploadableException();
+    }
     return video;
   }
 

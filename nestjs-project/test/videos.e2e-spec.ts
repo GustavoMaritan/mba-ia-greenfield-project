@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource } from 'typeorm';
 import { cleanAllTables } from '../src/test/create-test-data-source';
+import { Video, VideoStatus } from '../src/videos/entities/video.entity';
 import {
   AuthenticatedUser,
   createAuthenticatedUser,
@@ -159,6 +160,119 @@ describe('Videos (e2e)', () => {
     it('returns 401 without a token', async () => {
       await request(app.getHttpServer())
         .get(`/channels/me/videos/${randomUUID()}`)
+        .expect(401);
+    });
+  });
+
+  describe('upload parts', () => {
+    function signParts(
+      user: AuthenticatedUser,
+      id: string,
+      partNumbers: unknown,
+    ) {
+      return request(app.getHttpServer())
+        .post(`/channels/me/videos/${id}/upload-parts`)
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .send({ part_numbers: partNumbers });
+    }
+
+    function listParts(user: AuthenticatedUser, id: string) {
+      return request(app.getHttpServer())
+        .get(`/channels/me/videos/${id}/upload-parts`)
+        .set('Authorization', `Bearer ${user.accessToken}`);
+    }
+
+    it('signs part 1, accepts a direct PUT to storage and lists it for resume', async () => {
+      const body = Buffer.alloc(2048, 1);
+      const created = await initiate(owner, {
+        ...validBody,
+        size_bytes: body.length,
+      }).expect(201);
+      const id: string = created.body.id;
+
+      const before = await listParts(owner, id).expect(200);
+      expect(before.body).toEqual({ parts: [] });
+
+      const signed = await signParts(owner, id, [1]).expect(200);
+      expect(signed.body.parts).toHaveLength(1);
+      expect(signed.body.parts[0].part_number).toBe(1);
+      expect(signed.body.parts[0].url).toContain('X-Amz-Expires=3600');
+      const expiresIn = Date.parse(signed.body.expires_at) - Date.now();
+      expect(expiresIn).toBeGreaterThan(3500 * 1000);
+
+      // o corpo vai direto para o storage, nunca pela API
+      const put = await fetch(signed.body.parts[0].url, {
+        method: 'PUT',
+        body,
+      });
+      expect(put.status).toBe(200);
+
+      const after = await listParts(owner, id).expect(200);
+      expect(after.body.parts).toEqual([
+        {
+          part_number: 1,
+          etag: put.headers.get('etag'),
+          size_bytes: body.length,
+        },
+      ]);
+    });
+
+    it.each([
+      [[]],
+      [[1, 1]],
+      [Array.from({ length: 101 }, (_, i) => i + 1)],
+      [[0]],
+    ])(
+      'returns 400 VALIDATION_ERROR for part_numbers %j',
+      async (partNumbers) => {
+        const created = await initiate(owner).expect(201);
+
+        const res = await signParts(owner, created.body.id, partNumbers).expect(
+          400,
+        );
+
+        expect(res.body.error).toBe('VALIDATION_ERROR');
+      },
+    );
+
+    it('returns 400 INVALID_PART_NUMBER above the part count', async () => {
+      const created = await initiate(owner).expect(201);
+
+      const res = await signParts(owner, created.body.id, [2]).expect(400);
+
+      expect(res.body.error).toBe('INVALID_PART_NUMBER');
+    });
+
+    it('returns 404 for another user video', async () => {
+      const created = await initiate(owner).expect(201);
+
+      const sign = await signParts(stranger, created.body.id, [1]).expect(404);
+      const list = await listParts(stranger, created.body.id).expect(404);
+
+      expect(sign.body.error).toBe('VIDEO_NOT_FOUND');
+      expect(list.body.error).toBe('VIDEO_NOT_FOUND');
+    });
+
+    it('returns 409 VIDEO_NOT_UPLOADABLE when the video is not a draft', async () => {
+      const created = await initiate(owner).expect(201);
+      await dataSource
+        .getRepository(Video)
+        .update(created.body.id, { status: VideoStatus.Processing });
+
+      const sign = await signParts(owner, created.body.id, [1]).expect(409);
+      const list = await listParts(owner, created.body.id).expect(409);
+
+      expect(sign.body.error).toBe('VIDEO_NOT_UPLOADABLE');
+      expect(list.body.error).toBe('VIDEO_NOT_UPLOADABLE');
+    });
+
+    it('returns 401 without a token', async () => {
+      await request(app.getHttpServer())
+        .post(`/channels/me/videos/${randomUUID()}/upload-parts`)
+        .send({ part_numbers: [1] })
+        .expect(401);
+      await request(app.getHttpServer())
+        .get(`/channels/me/videos/${randomUUID()}/upload-parts`)
         .expect(401);
     });
   });

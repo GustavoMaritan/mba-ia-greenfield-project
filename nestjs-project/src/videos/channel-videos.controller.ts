@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
@@ -21,6 +23,9 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import { InitiateVideoUploadDto } from './dto/initiate-video-upload.dto';
 import { InitiateVideoUploadResponseDto } from './dto/initiate-video-upload-response.dto';
+import { SignUploadPartsDto } from './dto/sign-upload-parts.dto';
+import { SignedUploadPartsResponseDto } from './dto/signed-upload-parts-response.dto';
+import { UploadedPartsResponseDto } from './dto/uploaded-parts-response.dto';
 import {
   VideoOwnerResponseDto,
   toVideoOwnerResponse,
@@ -99,5 +104,83 @@ export class ChannelVideosController {
     return toVideoOwnerResponse(
       await this.videosService.findOwnedVideo(user.sub, id),
     );
+  }
+
+  @Post(':id/upload-parts')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign upload parts',
+    description:
+      'Returns presigned URLs (valid for 1 hour) for the requested part numbers. The client PUTs each 64 MiB chunk straight to storage; no video bytes go through the API.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiBody({ type: SignUploadPartsDto })
+  @ApiResponse({ status: 200, type: SignedUploadPartsResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed or part number above the video part count',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Missing or invalid access token',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found in the caller channel',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not a draft accepting uploads',
+    schema: errorSchema,
+  })
+  async signUploadParts(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SignUploadPartsDto,
+  ): Promise<SignedUploadPartsResponseDto> {
+    const signed = await this.videosService.signUploadParts(
+      user.sub,
+      id,
+      dto.part_numbers,
+    );
+    return { parts: signed.parts, expires_at: signed.expires_at.toISOString() };
+  }
+
+  @Get(':id/upload-parts')
+  @ApiOperation({
+    summary: 'List uploaded parts',
+    description:
+      'Lists the parts already stored for the upload in progress, so an interrupted upload can resume from the missing parts.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiResponse({ status: 200, type: UploadedPartsResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'id is not a valid UUID',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Missing or invalid access token',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Video not found in the caller channel',
+    schema: errorSchema,
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Video is not a draft accepting uploads',
+    schema: errorSchema,
+  })
+  async listUploadedParts(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<UploadedPartsResponseDto> {
+    return { parts: await this.videosService.listUploadedParts(user.sub, id) };
   }
 }

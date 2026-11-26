@@ -89,4 +89,28 @@ describe('VideosService (integration)', () => {
       ).rejects.toBeInstanceOf(VideoNotFoundException);
     });
   });
+
+  describe('signUploadParts / listUploadedParts', () => {
+    it('should sign a URL that accepts a real PUT and then list the part', async () => {
+      const { user } = await createUserWithChannel(dataSource);
+      const { video } = await service.initiateUpload(user.id, input);
+      const body = Buffer.alloc(input.size_bytes, 7);
+
+      await expect(
+        service.listUploadedParts(user.id, video.id),
+      ).resolves.toEqual([]);
+      const { parts } = await service.signUploadParts(user.id, video.id, [1]);
+      const put = await fetch(parts[0].url, { method: 'PUT', body });
+      expect(put.status).toBe(200);
+
+      const uploaded = await service.listUploadedParts(user.id, video.id);
+      expect(uploaded).toEqual([
+        {
+          part_number: 1,
+          etag: put.headers.get('etag'),
+          size_bytes: input.size_bytes,
+        },
+      ]);
+    });
+  });
 });
